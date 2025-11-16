@@ -84,45 +84,54 @@ elif page == "Register Student":
 
 elif page == "Live Attendance":
     st.title("Live Attendance")
-    run = st.checkbox("Start Live Recognition")
-    frame_placeholder = st.empty()
-    status_placeholder = st.empty()
-    table_placeholder = st.empty()
+    from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
+    import av
     
-    if run:
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            st.error("Cannot access webcam.")
-        else:
-            while run:
-                ret, frame = cap.read()
-                if not ret:
-                    st.error("Failed to capture frame.")
-                    break
-                
-                # Recognize and mark
-                student_id, student_name, error = recognize_face(frame, encodings)
+    # WebRTC configuration for better compatibility
+    RTC_CONFIGURATION = RTCConfiguration({
+        "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+    })
+    
+    class VideoProcessor:
+        def __init__(self):
+            self.encodings = load_encodings()  # Load encodings
+            self.last_recognized = None
+            self.last_time = 0
+        
+        def recv(self, frame):
+            img = frame.to_ndarray(format="bgr24")
+            
+            # Process every 1 second to avoid overload
+            current_time = time.time()
+            if current_time - self.last_time > 1:
+                self.last_time = current_time
+                student_id, student_name, error = recognize_face(img, self.encodings)
                 if error:
-                    status_placeholder.write(f"❌ {error}")
-                elif student_id:
+                    st.session_state.status = f"❌ {error}"
+                elif student_id and student_id != self.last_recognized:
                     success, msg = mark_attendance(student_id, student_name)
                     if success:
-                        status_placeholder.write(f"✅ {msg}")
+                        st.session_state.status = f"✅ {msg}"
+                        self.last_recognized = student_id
                     else:
-                        status_placeholder.write(f"⚠️ {msg}")
-                
-                # Display frame
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frame_placeholder.image(frame_rgb, channels="RGB", use_column_width=True)
-                
-                # Update table
-                df_today = get_today_attendance()
-                table_placeholder.dataframe(df_today, use_container_width=True)
-                
-                time.sleep(0.1)  # ~10 FPS
-            cap.release()
-    else:
-        st.info("Check the box to start live recognition.")
+                        st.session_state.status = f"⚠️ {msg}"
+            
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
+    
+    ctx = webrtc_streamer(
+        key="attendance",
+        mode=WebRtcMode.SENDRECV,
+        rtc_configuration=RTC_CONFIGURATION,
+        video_processor_factory=VideoProcessor,
+        media_stream_constraints={"video": True, "audio": False},
+        async_processing=True,
+    )
+    
+    # Display status and table
+    if "status" in st.session_state:
+        st.write(st.session_state.status)
+    df_today = get_today_attendance()
+    st.dataframe(df_today, use_container_width=True)
 
 elif page == "Attendance History":
     st.title("Attendance History")
